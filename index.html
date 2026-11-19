@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Reading tracker prototype</title>
+<style>
+  /* 1. STYLE: colours are variables, redefined for dark mode */
+  :root {
+    --bg:#eef3f1; --card:#fff; --ink:#1b2724; --mute:#5b6b66; --line:#d3dcd8;
+    --accent:#2a6b5a; --accent-ink:#fff;
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#111816; --card:#1a2420; --ink:#e5eeeb; --mute:#9bada7; --line:#2e3c37;
+      --accent:#6cc4aa; --accent-ink:#0c1a15;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#111816; --card:#1a2420; --ink:#e5eeeb; --mute:#9bada7; --line:#2e3c37;
+    --accent:#6cc4aa; --accent-ink:#0c1a15;
+  }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui,sans-serif; }
+  main { max-width:32rem; margin:0 auto; padding:1rem; }
+  h1 { font:600 1.6rem Georgia,serif; margin:.5rem 0 1rem; }
+  form { display:flex; gap:.5rem; flex-wrap:wrap; margin-bottom:1.25rem; }
+  input, button { font:inherit; padding:.6rem .75rem; border-radius:.5rem; border:1px solid var(--line);
+                  background:var(--card); color:var(--ink); }
+  #title { flex:1 1 100%; }
+  #pages { flex:1; min-width:0; }
+  button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+  ul { list-style:none; margin:0; padding:0; display:grid; gap:.75rem; }
+  li { background:var(--card); border:1px solid var(--line); border-radius:.75rem; padding:.9rem; }
+  .row { display:flex; gap:.5rem; align-items:center; margin-top:.6rem; }
+  .row input { width:5.5rem; }
+  .bar { height:.5rem; background:var(--line); border-radius:1rem; overflow:hidden; margin-top:.5rem; }
+  .bar div { height:100%; background:var(--accent); }
+  .mute { color:var(--mute); font-size:.9rem; }
+  #cam { width:100%; border-radius:.75rem; background:#000; margin-bottom:.5rem; }
+  #scan { margin-bottom:.5rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Reading now</h1>
+
+  <!-- Barcode scanner: button, live camera view and a status line -->
+  <button type="button" id="scan">Scan barcode</button>
+  <button type="button" id="photo">Scan from photo</button>
+  <input type="file" id="file" accept="image/*" capture="environment" hidden>
+  <video id="cam" playsinline muted hidden></video>
+  <p class="mute" id="scanmsg"></p>
+
+  <!-- 2. STRUCTURE: a form to add a book, and an empty list that JavaScript fills -->
+  <form id="add">
+    <input id="title" placeholder="Title" required>
+    <input id="pages" type="number" min="1" placeholder="Total pages" required>
+    <button class="primary">Add book</button>
+  </form>
+  <ul id="list"></ul>
+</main>
+
+<script>
+  // 3. BEHAVIOUR. The "database" is one array, saved in the browser's localStorage.
+  const KEY = 'reading-prototype-v1';
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(KEY)) || []; }
+    catch (e) { return []; }                      // storage can be empty or blocked
+  }
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(books)); } catch (e) {}
+  }
+
+  let books = load();                              // [{title, pages, page}, ...]
+
+  // Small helper to create an element with text and attributes
+  function el(tag, attrs = {}, text = '') {
+    const node = document.createElement(tag);
+    Object.assign(node, attrs);
+    node.textContent = text;
+    return node;
+  }
+
+  // Draw the whole list from the data. Call it after every change.
+  function render() {
+    const list = document.getElementById('list');
+    list.textContent = '';
+    if (!books.length) {
+      list.append(el('p', { className:'mute' }, 'No books yet. Add one above.'));
+      return;
+    }
+    books.forEach((b, i) => {
+      const pct = Math.min(100, Math.round(100 * b.page / b.pages));
+      const li = el('li');
+      li.append(el('strong', {}, b.title));
+      li.append(el('div', { className:'mute' },
+        `Page ${b.page} of ${b.pages} (${pct}%)` + (b.page >= b.pages ? ', finished' : '')));
+
+      const bar = el('div', { className:'bar' });
+      const fill = el('div'); fill.style.width = pct + '%';
+      bar.append(fill); li.append(bar);
+
+      const row = el('div', { className:'row' });
+      const input = el('input', { type:'number', min:0, max:b.pages, value:b.page });
+      input.addEventListener('change', () => {
+        b.page = Math.max(0, Math.min(b.pages, Number(input.value) || 0));
+        save(); render();
+      });
+      const plus = el('button', {}, '+10 pages');
+      plus.addEventListener('click', () => { b.page = Math.min(b.pages, b.page + 10); save(); render(); });
+      const del = el('button', {}, 'Remove');
+      del.addEventListener('click', () => { books.splice(i, 1); save(); render(); });
+      row.append(input, plus, del); li.append(row);
+      list.append(li);
+    });
+  }
+
+  document.getElementById('add').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const title = document.getElementById('title').value.trim();
+    const pages = Number(document.getElementById('pages').value);
+    if (!title || !pages) return;
+    books.unshift({ title, pages, page: 0 });
+    save(); render();
+    e.target.reset();
+  });
+
+  // 4. BARCODE SCANNER. Chrome on Android has a built-in BarcodeDetector.
+  const scanBtn = document.getElementById('scan');
+  const cam = document.getElementById('cam');
+  const msg = document.getElementById('scanmsg');
+  let stream = null;
+
+  function stopScan() {
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    stream = null; cam.hidden = true; scanBtn.textContent = 'Scan barcode';
+  }
+
+  scanBtn.addEventListener('click', async () => {
+    if (stream) { stopScan(); return; }
+    if (!('BarcodeDetector' in window)) {
+      msg.textContent = 'This browser has no built-in barcode scanner. Type the details instead.';
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    } catch (e) {
+      msg.textContent = 'Camera not available here (' + e.name + ').';
+      return;
+    }
+    cam.srcObject = stream; cam.hidden = false; await cam.play();
+    scanBtn.textContent = 'Stop scanning';
+    msg.textContent = 'Point the camera at the barcode on the back of the book.';
+    const detector = new BarcodeDetector({ formats: ['ean_13'] });
+    const loop = async () => {
+      if (!stream) return;
+      try {
+        const found = await detector.detect(cam);
+        if (found.length) { const isbn = found[0].rawValue; stopScan(); gotIsbn(isbn); return; }
+      } catch (e) {}
+      setTimeout(loop, 300);                         // try again 3 times a second
+    };
+    loop();
+  });
+
+  // Fallback: take a photo with the phone's camera app, then read the barcode from the picture
+  document.getElementById('photo').addEventListener('click', () => document.getElementById('file').click());
+  document.getElementById('file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!('BarcodeDetector' in window)) { msg.textContent = 'This browser has no built-in barcode scanner.'; return; }
+    msg.textContent = 'Reading barcode from photo…';
+    try {
+      const bitmap = await createImageBitmap(file);
+      const found = await new BarcodeDetector({ formats: ['ean_13'] }).detect(bitmap);
+      if (found.length) gotIsbn(found[0].rawValue);
+      else msg.textContent = 'No barcode found. Try again, closer and in good light.';
+    } catch (err) { msg.textContent = 'Could not read that photo.'; }
+    e.target.value = '';
+  });
+
+  // 5. LOOKUP. A real app would query Open Library or Google Books with the ISBN.
+  async function gotIsbn(isbn) {
+    msg.textContent = 'Scanned ISBN ' + isbn + '. Looking up details…';
+    try {
+      const res = await fetch('https://openlibrary.org/isbn/' + isbn + '.json');
+      const book = await res.json();
+      document.getElementById('title').value = book.title || '';
+      if (book.number_of_pages) document.getElementById('pages').value = book.number_of_pages;
+      msg.textContent = 'Found: ' + (book.title || isbn) + '. Check the details, then tap Add book.';
+    } catch (e) {
+      msg.textContent = 'Scanned ISBN ' + isbn + ', but the lookup failed here. Fill in the title and pages by hand.';
+      document.getElementById('title').focus();
+    }
+  }
+
+  render();
+</script>
+</body>
+</html>
